@@ -77,6 +77,10 @@ jobs:
           CONFIG_PACKAGE_kmod-fs-exfat=y
           CONFIG_PACKAGE_block-mount=y
 
+          CONFIG_PACKAGE_kmod-tun=y
+          CONFIG_PACKAGE_kmod-inet-diag=y
+          CONFIG_PACKAGE_kmod-nft-tproxy=y
+
           CONFIG_PACKAGE_kmod-amneziawg=y
           CONFIG_PACKAGE_amneziawg-tools=y
           CONFIG_PACKAGE_luci-proto-amneziawg=y
@@ -119,9 +123,91 @@ jobs:
           cp "$IMAGE" ../firmware-output/
           cp firmware.sha256 ../firmware-output/
 
+      - name: Collect kernel modules and build metadata
+        working-directory: openwrt
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="../modules-output"
+          mkdir -p "$OUT"
+
+          echo "Collecting required kernel modules..."
+
+          for pkg in kmod-tun kmod-inet-diag kmod-nft-tproxy; do
+            FILE=$(find bin -type f -name "${pkg}-*.apk" -print -quit)
+
+            if [ -z "$FILE" ]; then
+              echo "ERROR: $pkg APK not found"
+              echo "Available matching files:"
+              find bin -type f -iname "*${pkg}*" || true
+              exit 1
+            fi
+
+            cp "$FILE" "$OUT/"
+            echo "Found: $FILE"
+
+            tar -xOf "$FILE" .PKGINFO \
+              > "$OUT/${pkg}.PKGINFO"
+          done
+
+          echo "Saving OpenWrt build configuration..."
+          cp .config "$OUT/openwrt.config"
+
+          echo "Saving kernel configuration..."
+          KERNEL_CONFIG=$(find build_dir \
+            -type f \
+            -path '*/linux-*/.config' \
+            -print -quit)
+
+          if [ -n "$KERNEL_CONFIG" ]; then
+            cp "$KERNEL_CONFIG" "$OUT/kernel.config"
+          else
+            echo "WARNING: kernel .config not found"
+          fi
+
+          echo "Saving kernel package metadata..."
+          KERNEL_APK=$(find bin -type f \
+            -name 'kernel-*.apk' \
+            -print -quit)
+
+          if [ -n "$KERNEL_APK" ]; then
+            tar -xOf "$KERNEL_APK" .PKGINFO \
+              > "$OUT/kernel.PKGINFO"
+          else
+            echo "WARNING: kernel APK not found"
+          fi
+
+          echo "Saving build information..."
+          {
+            echo "OpenWrt version:"
+            git describe --always --dirty || true
+            echo
+            echo "Kernel version:"
+            grep -E 'CONFIG_LINUX_(VERSION|KERNEL)' .config || true
+            echo
+            echo "Target:"
+            grep -E '^CONFIG_TARGET_' .config || true
+          } > "$OUT/build-info.txt"
+
+          cd "$OUT"
+          sha256sum *.apk > SHA256SUMS
+
+          echo "Collected files:"
+          ls -lh
+
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
           name: Xiaomi-Mi-Router-4C-USB-OpenWrt-25.12.5
           path: firmware-output/*
           retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload kernel modules artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Xiaomi-Mi-Router-4C-Kernel-Modules
+          path: modules-output/*
+          retention-days: 30
+          if-no-files-found: error
