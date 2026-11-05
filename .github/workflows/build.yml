@@ -1,5 +1,5 @@
 
-name: Build Xiaomi Mi Router 4C USB Edition
+name: Build Xiaomi Mi Router 4C USB Edition.
 
 on:
   workflow_dispatch:
