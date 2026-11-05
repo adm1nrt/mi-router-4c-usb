@@ -9,6 +9,7 @@ on:
     paths:
       - 'patches/**'
       - 'files/**'
+      - 'github-overlay/**'
       - '.github/workflows/build.yml'
 
 permissions:
@@ -16,7 +17,7 @@ permissions:
 
 jobs:
   build:
-    name: OpenWrt 25.12.5 USB Host
+    name: OpenWrt 25.12.5 USB Host + Router AI
     runs-on: ubuntu-24.04
     timeout-minutes: 300
 
@@ -65,6 +66,8 @@ jobs:
       - name: Configure Xiaomi Mi Router 4C
         working-directory: openwrt
         run: |
+          set -e
+
           cat > .config <<'EOF'
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_mt76x8=y
@@ -86,7 +89,17 @@ jobs:
           CONFIG_PACKAGE_luci-proto-amneziawg=y
           EOF
 
+          echo "Checking Router AI Python configuration..."
+
+          test -f ../github-overlay/ai-python.config
+
+          cat ../github-overlay/ai-python.config >> .config
+
           make defconfig
+
+          echo "Checking selected Python packages..."
+
+          grep -E 'CONFIG_PACKAGE_(python3|ca-bundle)' .config || true
 
       - name: Download package sources
         working-directory: openwrt
@@ -114,6 +127,7 @@ jobs:
           fi
 
           SIZE=$(stat -c%s "$IMAGE")
+
           echo "Firmware: $IMAGE"
           echo "Size: $SIZE bytes"
 
@@ -123,7 +137,6 @@ jobs:
           cp "$IMAGE" ../firmware-output/
           cp firmware.sha256 ../firmware-output/
 
-      
       - name: Collect kernel modules and build metadata
         working-directory: openwrt
         shell: bash
@@ -187,7 +200,9 @@ jobs:
 
           cd "$OUT"
 
-          sha256sum *.apk > SHA256SUMS
+          if compgen -G '*.apk' > /dev/null; then
+            sha256sum *.apk > SHA256SUMS
+          fi
 
           echo "Collected files:"
           ls -lh
