@@ -1,5 +1,4 @@
-
-name: Build Xiaomi Mi Router 4C USB Edition.
+name: Build Xiaomi Mi Router 4C USB Edition
 
 on:
   workflow_dispatch:
@@ -25,6 +24,15 @@ jobs:
       - name: Checkout build configuration
         uses: actions/checkout@v4
 
+      - name: Validate build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f patches/001-enable-usb-host.patch
+          test -f patches/002-add-usb-and-awg-packages.patch
+          test -f github-overlay/ai-python.config
+          echo "Required patches and Router AI package config found."
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -44,15 +52,18 @@ jobs:
       - name: Apply USB Host patches
         working-directory: openwrt
         run: |
+          set -e
+          git apply --check ../patches/001-enable-usb-host.patch
           git apply ../patches/001-enable-usb-host.patch
+          git apply --check ../patches/002-add-usb-and-awg-packages.patch
           git apply ../patches/002-add-usb-and-awg-packages.patch
 
       - name: Add AmneziaWG source packages
         working-directory: openwrt
         run: |
+          set -e
           git clone --depth 1 \
             https://github.com/Slava-Shchipunov/awg-openwrt.git awg-src
-
           cp -a awg-src/amneziawg-tools package/
           cp -a awg-src/kmod-amneziawg package/
           cp -a awg-src/luci-proto-amneziawg package/
@@ -65,8 +76,9 @@ jobs:
 
       - name: Configure Xiaomi Mi Router 4C
         working-directory: openwrt
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           cat > .config <<'EOF'
           CONFIG_TARGET_ramips=y
@@ -79,6 +91,7 @@ jobs:
           CONFIG_PACKAGE_kmod-fs-ext4=y
           CONFIG_PACKAGE_kmod-fs-exfat=y
           CONFIG_PACKAGE_block-mount=y
+          CONFIG_PACKAGE_e2fsprogs=y
 
           CONFIG_PACKAGE_kmod-tun=y
           CONFIG_PACKAGE_kmod-inet-diag=y
@@ -87,19 +100,27 @@ jobs:
           CONFIG_PACKAGE_kmod-amneziawg=y
           CONFIG_PACKAGE_amneziawg-tools=y
           CONFIG_PACKAGE_luci-proto-amneziawg=y
+
+          CONFIG_PACKAGE_kmod-wireguard=y
+          CONFIG_PACKAGE_wireguard-tools=y
+
+          CONFIG_PACKAGE_python3-base=y
+          CONFIG_PACKAGE_python3-light=y
+          CONFIG_PACKAGE_python3-ssl=y
+          CONFIG_PACKAGE_python3-urllib=y
+          CONFIG_PACKAGE_python3-logging=y
+          CONFIG_PACKAGE_python3-email=y
+          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG_PACKAGE_ca-certificates=y
           EOF
 
-          echo "Checking Router AI Python configuration..."
-
-          test -f ../github-overlay/ai-python.config
-
+          echo "Adding Router AI Python configuration..."
           cat ../github-overlay/ai-python.config >> .config
 
           make defconfig
 
-          echo "Checking selected Python packages..."
-
-          grep -E 'CONFIG_PACKAGE_(python3|ca-bundle)' .config || true
+          echo "Selected Python/TLS/USB/VPN packages:"
+          grep -E '^(CONFIG_PACKAGE_(python3|libpython3|ca-bundle|ca-certificates|kmod-usb|kmod-fs-ext4|block-mount|wireguard|kmod-wireguard|kmod-amneziawg|amneziawg))' .config || true
 
       - name: Download package sources
         working-directory: openwrt
@@ -113,8 +134,9 @@ jobs:
 
       - name: Verify firmware
         working-directory: openwrt
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           IMAGE=$(find bin/targets/ramips/mt76x8 \
             -maxdepth 1 \
@@ -127,10 +149,8 @@ jobs:
           fi
 
           SIZE=$(stat -c%s "$IMAGE")
-
           echo "Firmware: $IMAGE"
           echo "Size: $SIZE bytes"
-
           sha256sum "$IMAGE" | tee firmware.sha256
 
           mkdir -p ../firmware-output
@@ -146,46 +166,26 @@ jobs:
           OUT="../modules-output"
           mkdir -p "$OUT"
 
-          echo "Collecting required kernel modules..."
-
           for pkg in kmod-tun kmod-inet-diag kmod-nft-tproxy; do
             FILE=$(find bin -type f -name "${pkg}-*.apk" -print -quit)
-
             if [ -z "$FILE" ]; then
               echo "ERROR: $pkg APK not found"
               find bin -type f -iname "*${pkg}*" || true
               exit 1
             fi
-
             cp "$FILE" "$OUT/"
-            echo "Collected: $FILE"
-            file "$FILE"
           done
 
-          echo "Collecting kernel packages..."
-
-          find bin -type f -name 'kernel-*.apk' \
-            -exec cp {} "$OUT/" \;
-
-          echo "Saving build configuration..."
-
+          find bin -type f -name 'kernel-*.apk' -exec cp {} "$OUT/" \;
           cp .config "$OUT/openwrt.config"
 
-          KERNEL_CONFIG=$(find build_dir \
-            -type f \
-            -path '*/linux-*/.config' \
-            -print -quit)
-
+          KERNEL_CONFIG=$(find build_dir -type f -path '*/linux-*/.config' -print -quit)
           if [ -n "$KERNEL_CONFIG" ]; then
             cp "$KERNEL_CONFIG" "$OUT/kernel.config"
           fi
 
-          echo "Saving package indexes..."
-
-          find bin -type f \( \
-            -name 'Packages.adb' -o \
-            -name 'Packages.manifest' \
-          \) -exec cp {} "$OUT/" \;
+          find bin -type f \( -name 'Packages.adb' -o -name 'Packages.manifest' \) \
+            -exec cp {} "$OUT/" \;
 
           {
             echo "OpenWrt source commit:"
@@ -199,12 +199,9 @@ jobs:
           } > "$OUT/build-info.txt"
 
           cd "$OUT"
-
           if compgen -G '*.apk' > /dev/null; then
             sha256sum *.apk > SHA256SUMS
           fi
-
-          echo "Collected files:"
           ls -lh
 
       - name: Upload firmware artifact
